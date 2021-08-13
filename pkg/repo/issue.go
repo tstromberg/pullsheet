@@ -87,6 +87,12 @@ func issues(ctx context.Context, c *client.Client, org string, project string, s
 		logrus.Infof("Processing page %d of %s/%s issue results ...", page, org, project)
 
 		page = resp.NextPage
+
+		// Repo has no issues!
+		if len(issues) == 0 {
+			break
+		}
+
 		logrus.Infof("Current issue updated at %s", issues[0].GetUpdatedAt())
 
 		for _, i := range issues {

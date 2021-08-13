@@ -68,6 +68,11 @@ func MergedPulls(ctx context.Context, c *client.Client, org string, project stri
 
 		logrus.Infof("Processing page %d of %s/%s pull request results (looking for %s)...", page, org, project, since)
 
+		// Repo has no PRs!
+		if len(prs) == 0 {
+			break
+		}
+
 		page = resp.NextPage
 		logrus.Infof("Current PR updated at %s", prs[0].GetUpdatedAt())
 		for _, pr := range prs {
