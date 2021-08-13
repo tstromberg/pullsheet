@@ -31,7 +31,7 @@ import (
 	"github.com/google/pullsheet/pkg/ghcache"
 )
 
-var notSegmentRe = regexp.MustCompile(`[/-_]+`)
+var notSegmentRe = regexp.MustCompile(`[\/\-\_\@\=]+`)
 
 // ReviewSummary a summary of a users reviews on a PR
 type ReviewSummary struct {
@@ -60,7 +60,7 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 		return nil, fmt.Errorf("pulls: %v", err)
 	}
 
-	logrus.Infof("found %d PR's in %s/%s to find reviews for", len(prs), org, project)
+	logrus.Infof("found %d PRs in %s/%s to find reviews for", len(prs), org, project)
 	reviews := []*ReviewSummary{}
 
 	matchUser := map[string]bool{}
@@ -72,6 +72,28 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 		// username -> summary
 		prMap := map[string]*ReviewSummary{}
 		comments := []comment{}
+
+		ts, err := ghcache.Reviews(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
+		if err != nil {
+			logrus.Errorf("TIMELINE FAILED: %v", err)
+			return nil, err
+		}
+
+		// Approve/Reject counts as a single comment
+		for _, t := range ts {
+			logrus.Infof("%s on PR #%d: %q - %+v", t.GetUser().GetLogin(), pr.GetNumber(), t.GetBody(), t)
+			if isBot(t.GetUser()) {
+				continue
+			}
+			if t.GetUser().GetLogin() == pr.GetUser().GetLogin() {
+				continue
+			}
+			comments = append(comments, comment{Author: t.GetUser().GetLogin(), Body: t.GetState() + " " + t.GetBody(), CreatedAt: t.GetSubmittedAt(), Review: true})
+		}
+
+		for _, rs := range prMap {
+			reviews = append(reviews, rs)
+		}
 
 		// There is wickedness in the GitHub API: PR comments are available via the Issues API, and PR *review* comments are available via the PullRequests API
 		cs, err := ghcache.PullRequestsListComments(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
@@ -150,6 +172,7 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 		for _, rs := range prMap {
 			reviews = append(reviews, rs)
 		}
+
 	}
 
 	return reviews, err

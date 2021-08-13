@@ -34,6 +34,7 @@ type blob struct {
 	PullRequestComments []github.PullRequestComment
 	IssueComments       []github.IssueComment
 	Issue               github.Issue
+	Reviews             []github.PullRequestReview
 }
 
 func PullRequestsGet(ctx context.Context, p persist.Cacher, c *github.Client, t time.Time, org string, project string, num int) (*github.PullRequest, error) {
@@ -167,4 +168,32 @@ func IssuesListComments(ctx context.Context, p persist.Cacher, c *github.Client,
 	}
 
 	return cs, p.Set(key, &persist.Blob{GHIssueComments: cs})
+}
+
+func Reviews(ctx context.Context, p persist.Cacher, c *github.Client, t time.Time, org string, project string, num int) ([]*github.PullRequestReview, error) {
+	key := fmt.Sprintf("review-%s-%s-%d", org, project, num)
+	val := p.Get(key, t)
+
+	if val != nil {
+		return val.GHReviews, nil
+	}
+
+	opts := &github.ListOptions{PerPage: 100}
+	rs := []*github.PullRequestReview{}
+	for {
+		rsp, resp, err := c.PullRequests.ListReviews(ctx, org, project, num, opts)
+		if err != nil {
+			return nil, fmt.Errorf("get: %v", err)
+		}
+
+		rs = append(rs, rsp...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+
+		opts.Page = resp.NextPage
+	}
+
+	return rs, p.Set(key, &persist.Blob{GHReviews: rs})
 }
