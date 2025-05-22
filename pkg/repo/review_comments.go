@@ -76,13 +76,13 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 
 		ts, err := ghcache.Reviews(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
 		if err != nil {
-			logrus.Errorf("TIMELINE FAILED: %v", err)
+			klog.Errorf("TIMELINE FAILED: %v", err)
 			return nil, err
 		}
 
 		// Approve/Reject counts as a single comment
 		for _, t := range ts {
-			logrus.Infof("%s on PR #%d: %q - %+v", t.GetUser().GetLogin(), pr.GetNumber(), t.GetBody(), t)
+			klog.Infof("%s on PR #%d: %q - %+v", t.GetUser().GetLogin(), pr.GetNumber(), t.GetBody(), t)
 			if isBot(t.GetUser()) {
 				continue
 			}
