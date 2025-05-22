@@ -17,6 +17,11 @@ package leaderboard
 const leaderboardTmpl = `<html>
 <head>
     <title>{{ .Title }} - Leaderboard</title>
+		{{ if .DisableCaching }}
+    <meta http-equiv="CacheControl" content="no-cache, no-store, must-revalidate"/>
+    <meta http-equiv="Pragma" content="no-cache"/>
+    <meta http-equiv="Expires" content="0"/>
+		{{ end }}
     <link rel="preconnect" href="https://fonts.gstatic.com">
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
     <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
@@ -98,10 +103,10 @@ const leaderboardTmpl = `<html>
 <body>
     <h1>{{ .Title }}</h1>
     <div class="subtitle">{{.From}} &mdash; {{.Until}}</div>
-
+{{ if not .HideCommand }}
     <h2 class="cli">Command-line</h2>
     <pre>{{.Command}}</pre>
-
+{{ end }}
     {{ range .Categories }}
         <h2>{{ .Title }}</h2>
 
@@ -115,7 +120,7 @@ const leaderboardTmpl = `<html>
 
                 function draw{{.ID}}() {
                     var data = new google.visualization.arrayToDataTable([
-                    ['{{.Object}}', '{{.Metric}}', { role: 'annotation' }],
+                    [{label:'{{.Object}}',type:'string'},{label: '{{.Metric}}', type: 'number'}, { role: 'annotation' }],
                     {{ range .Items }}["{{.Name}}", {{.Count}}, "{{.Count}}"],
                     {{ end }}
                     ]);

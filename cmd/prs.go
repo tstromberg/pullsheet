@@ -16,11 +16,10 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/gocarina/gocsv"
+	"github.com/google/pullsheet/pkg/print"
+	"github.com/google/pullsheet/pkg/repo"
 	"github.com/google/pullsheet/pkg/summary"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/google/pullsheet/pkg/client"
@@ -48,18 +47,23 @@ func runPRs(rootOpts *rootOptions) error {
 		return err
 	}
 
-	data, err := summary.Pulls(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.branches, rootOpts.sinceParsed, rootOpts.untilParsed)
+	var repos []string
+
+	if rootOpts.org != "" {
+		repos, _ = repo.ListRepoNames(ctx, c, rootOpts.org)
+	} else {
+		repos = rootOpts.repos
+	}
+
+	data, err := summary.Pulls(ctx, c, repos, rootOpts.users, rootOpts.branches, rootOpts.sinceParsed, rootOpts.untilParsed)
 	if err != nil {
 		return err
 	}
 
-	out, err := gocsv.MarshalString(&data)
+	err = print.Print(data, rootOpts.out)
 	if err != nil {
 		return err
 	}
-
-	logrus.Infof("%d bytes of prs output", len(out))
-	fmt.Print(out)
 
 	return nil
 }

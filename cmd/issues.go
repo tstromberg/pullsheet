@@ -16,11 +16,9 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/gocarina/gocsv"
+	"github.com/google/pullsheet/pkg/print"
 	"github.com/google/pullsheet/pkg/summary"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/google/pullsheet/pkg/client"
@@ -53,13 +51,10 @@ func runIssues(rootOpts *rootOptions) error {
 		return err
 	}
 
-	out, err := gocsv.MarshalString(&data)
+	err = print.Print(data, rootOpts.out)
 	if err != nil {
 		return err
 	}
-
-	logrus.Infof("%d bytes of issue output", len(out))
-	fmt.Print(out)
 
 	return nil
 }

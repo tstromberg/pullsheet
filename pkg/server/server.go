@@ -19,39 +19,129 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
-
-	"github.com/sirupsen/logrus"
+	"strconv"
+	"strings"
 
 	"github.com/google/pullsheet/pkg/client"
 	"github.com/google/pullsheet/pkg/server/job"
+	"github.com/google/pullsheet/pkg/server/site"
+	"github.com/karrick/tparse"
+	"k8s.io/klog/v2"
 )
 
+const dateForm = "2006-01-02"
+
+// Server is a server for the pullsheet web app.
 type Server struct {
 	cl   *client.Client
 	jobs []*job.Job
 }
 
+// New creates a new server.
 func New(ctx context.Context, c *client.Client, initJob *job.Job) *Server {
-	jobs := []*job.Job{}
+	server := &Server{
+		cl:   c,
+		jobs: []*job.Job{},
+	}
 	if initJob != nil {
-		jobs = append(jobs, initJob)
-		go initJob.Update(ctx, c)
+		server.AddJob(ctx, initJob)
 	}
 
-	return &Server{
-		cl:   c,
-		jobs: jobs,
+	return server
+}
+
+// Root redirects to home page
+func (s *Server) Root() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/home", http.StatusFound)
 	}
 }
 
-func (s *Server) Root() http.HandlerFunc {
+// Home returns the home page
+func (s *Server) Home() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		res, err := s.jobs[0].Render()
+		res, err := site.Home(s.jobs)
 		if err != nil {
-			logrus.Errorf("rendering job page: %s", err)
+			klog.Errorf("rendering home page: %d", err)
 		}
 		fmt.Fprint(w, res)
 	}
+}
+
+// Job returns a job page
+func (s *Server) Job() http.HandlerFunc {
+	jobPath := "/job/"
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get job number from request URL
+		slug := r.URL.Path[len(jobPath):]
+		if slug == "" {
+			slug = "0"
+		}
+		idx, err := strconv.Atoi(slug)
+		if err != nil {
+			klog.Errorf("getting job index: %d", err)
+		}
+		if idx >= len(s.jobs) {
+			idx = 0
+		}
+
+		// Render job from index number
+		res, err := s.jobs[idx].Render()
+		if err != nil {
+			klog.Errorf("rendering home page: %d", err)
+		}
+		fmt.Fprint(w, res)
+	}
+}
+
+// NewJob creates a new job
+func (s *Server) NewJob() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "POST":
+			// Call ParseForm() to parse the raw query and update r.PostForm and r.Form.
+			if err := r.ParseForm(); err != nil {
+				fmt.Fprintf(w, "ParseForm() err: %v", err)
+				return
+			}
+
+			// Extract form values
+			jobName := r.FormValue("jobname")
+			repos := r.FormValue("repos")
+			branches := r.FormValue("branches")
+			users := r.FormValue("users")
+			since := r.FormValue("since")
+			until := r.FormValue("until")
+
+			sinceParsed, err := tparse.ParseNow(dateForm, since)
+			if err != nil {
+				klog.Errorf("Parsing from: %d", err)
+			}
+			untilParsed, err := tparse.ParseNow(dateForm, until)
+			if err != nil {
+				klog.Errorf("Parsing from: %d", err)
+			}
+
+			s.AddJob(context.Background(), job.New(&job.Opts{
+				Repos:    strings.Split(repos, ","),
+				Branches: strings.Split(branches, ","),
+				Users:    strings.Split(users, ","),
+				Since:    sinceParsed,
+				Until:    untilParsed,
+				Title:    jobName,
+			}))
+
+			http.Redirect(w, r, fmt.Sprintf("/job/%d", len(s.jobs)-1), http.StatusFound)
+		default:
+			fmt.Fprintf(w, "Sorry, only POST method is supported.")
+		}
+	}
+}
+
+// AddJob adds a job to the server
+func (s *Server) AddJob(ctx context.Context, j *job.Job) {
+	s.jobs = append(s.jobs, j)
+	go j.Update(ctx, s.cl)
 }
 
 // Healthz returns a dummy healthz page - it's always happy here!
@@ -64,10 +154,10 @@ func (s *Server) Healthz() http.HandlerFunc {
 // Threadz returns a threadz page
 func (s *Server) Threadz() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		logrus.Infof("GET %s: %v", r.URL.Path, r.Header)
+		klog.Infof("GET %s: %v", r.URL.Path, r.Header)
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(stack()); err != nil {
-			logrus.Errorf("writing threadz response: %d", err)
+			klog.Errorf("writing threadz response: %d", err)
 		}
 	}
 }

@@ -12,7 +12,7 @@ jobs:
     name: Unit Tests
     strategy:
       matrix:
-        go-version: ['1.15.x', '1.16.x']
+        go-version: ['1.22.x']
         platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
     steps:
@@ -23,11 +23,11 @@ jobs:
         id: go
 
       - name: Check out code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Check for .codecov.yaml
         id: codecov-enabled
-        uses: andstor/file-existence-action@v1
+        uses: andstor/file-existence-action@v3
         with:
           files: .codecov.yaml
 
@@ -40,4 +40,4 @@ jobs:
 
       - if: steps.codecov-enabled.outputs.files_exists == 'true'
         name: Codecov
-        uses: codecov/codecov-action@v1
+        uses: codecov/codecov-action@v5

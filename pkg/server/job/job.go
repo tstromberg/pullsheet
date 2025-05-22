@@ -19,27 +19,30 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"k8s.io/klog/v2"
 
 	"github.com/google/pullsheet/pkg/client"
 	"github.com/google/pullsheet/pkg/leaderboard"
 )
 
+// Job represents a job to be run by the server
 type Job struct {
 	opts *Opts
 	u    *updater
 }
 
-// Options related to the Job
+// Opts Options related to the Job
 type Opts struct {
-	Repos    []string
-	Branches []string
-	Users    []string
-	Since    time.Time
-	Until    time.Time
-	Title    string
+	Repos          []string  // Repos to query
+	Branches       []string  // Branches to query
+	Users          []string  // Users to query
+	Since          time.Time // Since when to query
+	Until          time.Time // Until when to query
+	Title          string    // Title of the leaderboard
+	DisableCaching bool      // Disable caching
 }
 
+// New creates a new Job
 func New(opts *Opts) *Job {
 	return &Job{
 		opts: opts,
@@ -50,6 +53,7 @@ func New(opts *Opts) *Job {
 	}
 }
 
+// Render renders the leaderboard
 func (j *Job) Render() (string, error) {
 	d := data{
 		prs:      j.u.getPRs(),
@@ -58,7 +62,12 @@ func (j *Job) Render() (string, error) {
 		comments: j.u.getComments(),
 	}
 
-	result, err := leaderboard.Render(j.opts.Title, j.opts.Since, j.opts.Until, j.opts.Users, d.prs, d.reviews, d.issues, d.comments)
+	result, err := leaderboard.Render(leaderboard.Options{
+		Title:          j.opts.Title,
+		Since:          j.opts.Since,
+		Until:          j.opts.Until,
+		DisableCaching: j.opts.DisableCaching,
+	}, j.opts.Users, d.prs, d.reviews, d.issues, d.comments)
 	if err != nil {
 		return "", err
 	}
@@ -66,9 +75,15 @@ func (j *Job) Render() (string, error) {
 	return result, nil
 }
 
+// Update updates the Job
 func (j *Job) Update(ctx context.Context, cl *client.Client) {
 	err := j.u.updateData(ctx, cl, j.opts)
 	if err != nil {
-		logrus.Errorf("Failed to update job: %d", err)
+		klog.Errorf("Failed to update job: %d", err)
 	}
+}
+
+// GetOpts returns the options for the Job
+func (j *Job) GetOpts() Opts {
+	return *j.opts
 }
