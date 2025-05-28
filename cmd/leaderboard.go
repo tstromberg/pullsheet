@@ -172,6 +172,13 @@ func dataFromGitHub() (*data, error) {
 		return nil, err
 	}
 
+	if rootOpts.org != "" && len(rootOpts.repos) == 0 {
+		rootOpts.repos, err = repo.ListRepoNames(ctx, c, rootOpts.org)
+		if err != nil {
+			return nil, fmt.Errorf("list repos: %v", err)
+		}
+	}
+
 	prs, err := summary.Pulls(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.branches, rootOpts.sinceParsed, rootOpts.untilParsed)
 	if err != nil {
 		return nil, err

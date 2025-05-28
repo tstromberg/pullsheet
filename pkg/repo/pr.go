@@ -113,7 +113,6 @@ func MergedPulls(ctx context.Context, c *client.Client, org string, project stri
 			klog.Infof("Fetching PR #%d by %s (updated %s): %q", pr.GetNumber(), pr.GetUser().GetLogin(), pr.GetUpdatedAt(), pr.GetTitle())
 			fullPR, err := ghcache.PullRequestsGet(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
 			if err != nil {
-				time.Sleep(1 * time.Second)
 				fullPR, err = ghcache.PullRequestsGet(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
 				if err != nil {
 					klog.Errorf("failed PullRequestsGet: %v", err)

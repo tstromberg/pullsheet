@@ -46,6 +46,31 @@ func issueCloserChart(is []*repo.IssueSummary, users []string) chart {
 	}
 }
 
+func issueOpenerChart(is []*repo.IssueSummary, users []string) chart {
+	matchUser := map[string]bool{}
+	for _, u := range users {
+		matchUser[strings.ToLower(u)] = true
+	}
+
+	uMap := map[string]int{}
+	for _, i := range is {
+		author := i.Author
+		if len(matchUser) > 0 && !matchUser[strings.ToLower(author)] {
+			continue
+		}
+		if !strings.HasSuffix(author, "bot") {
+			uMap[author]++
+		}
+	}
+
+	return chart{
+		ID:     "issueOpener",
+		Title:  "Top Openers",
+		Metric: "# of issues opened",
+		Items:  topItems(mapToItems(uMap)),
+	}
+}
+
 func commentWordsChart(cs []*repo.CommentSummary, _ []string) chart {
 	uMap := map[string]int{}
 	for _, c := range cs {

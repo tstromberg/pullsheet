@@ -123,7 +123,6 @@ func issues(ctx context.Context, c *client.Client, org string, project string, s
 
 			full, err := ghcache.IssuesGet(ctx, c.Cache, c.GitHubClient, t, org, project, i.GetNumber())
 			if err != nil {
-				time.Sleep(1 * time.Second)
 				full, err = ghcache.IssuesGet(ctx, c.Cache, c.GitHubClient, t, org, project, i.GetNumber())
 			}
 			if err != nil {

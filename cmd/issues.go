@@ -16,8 +16,10 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/pullsheet/pkg/print"
+	"github.com/google/pullsheet/pkg/repo"
 	"github.com/google/pullsheet/pkg/summary"
 	"github.com/spf13/cobra"
 
@@ -44,6 +46,13 @@ func runIssues(rootOpts *rootOptions) error {
 	c, err := client.New(ctx, client.Config{GitHubTokenPath: rootOpts.tokenPath})
 	if err != nil {
 		return err
+	}
+
+	if rootOpts.org != "" && len(rootOpts.repos) == 0 {
+		rootOpts.repos, err = repo.ListRepoNames(ctx, c, rootOpts.org)
+		if err != nil {
+			return fmt.Errorf("list repos: %v", err)
+		}
 	}
 
 	data, err := summary.Issues(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.sinceParsed, rootOpts.untilParsed)

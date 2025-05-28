@@ -61,6 +61,11 @@ func IssueComments(ctx context.Context, c *client.Client, org string, project st
 
 		// username -> summary
 		iMap := map[string]*CommentSummary{}
+		//	fmt.Printf("comments: %d", i.GetComments())
+
+		if i.GetComments() == 0 {
+			continue
+		}
 
 		cs, err := ghcache.IssuesListComments(ctx, c.Cache, c.GitHubClient, issueDate(i), org, project, i.GetNumber())
 		if err != nil {

@@ -105,6 +105,7 @@ func Render(options Options, users []string, prs []*repo.PRSummary, reviews []*r
 					commentsChart(comments, users),
 					commentWordsChart(comments, users),
 					issueCloserChart(issues, users),
+					issueOpenerChart(issues, users),
 				},
 			},
 		},
