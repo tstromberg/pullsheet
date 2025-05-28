@@ -16,6 +16,7 @@ package repo
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -59,6 +60,59 @@ func ClosedIssues(ctx context.Context, c *client.Client, org string, project str
 	return result, nil
 }
 
+// fetchAllIssuePages fetches all pages of issues using the provided GitHub client and options,
+// applying retry logic for each page request via ghcache.RetryGithubCall.
+func fetchAllIssuePages(
+	ctx context.Context,
+	ghClient *github.Client,
+	org string,
+	project string,
+	listOpts *github.IssueListByRepoOptions,
+) ([]*github.Issue, error) {
+	var allIssues []*github.Issue
+	currentOpts := *listOpts // Make a copy to modify Page
+
+	// Ensure we start at the first page if not already set.
+	if currentOpts.Page == 0 {
+		currentOpts.Page = 1
+	}
+
+	for {
+		// For RetryGithubCall, the key is primarily for logging context.
+		key := fmt.Sprintf("list-issue-pages-%s-%s-page%d", org, project, currentOpts.Page)
+		callDesc := fmt.Sprintf("Issues.ListByRepo page %d for %s/%s (State: %s, Sort: %s, Direction: %s)", currentOpts.Page, org, project, listOpts.State, listOpts.Sort, listOpts.Direction)
+
+		apiCall := func() (interface{}, *github.Response, error) {
+			pageIssuesData, ghRespData, errData := ghClient.Issues.ListByRepo(ctx, org, project, &currentOpts)
+			return pageIssuesData, ghRespData, errData
+		}
+
+		rawData, ghResp, err := ghcache.RetryGithubCall(ctx, key, callDesc, apiCall)
+		if err != nil {
+			return nil, err // Error is already formatted by RetryGithubCall
+		}
+
+		pageIssues, ok := rawData.([]*github.Issue)
+		if !ok {
+			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.Issue)", callDesc, rawData)
+		}
+
+		if len(pageIssues) == 0 { // No more issues on this page.
+			klog.V(1).Infof("No issues found on page %d for %s/%s with specified criteria. Ending pagination.", currentOpts.Page, org, project)
+			break
+		}
+
+		allIssues = append(allIssues, pageIssues...)
+
+		if ghResp.NextPage == 0 {
+			break
+		}
+		currentOpts.Page = ghResp.NextPage
+	}
+	klog.V(1).Infof("Fetched %d issues via paginated API calls for %s/%s before applying detailed filters.", len(allIssues), org, project)
+	return allIssues, nil
+}
+
 // issues returns a list of issues in a project
 func issues(ctx context.Context, c *client.Client, org string, project string, since time.Time, until time.Time, users []string, state string) ([]*github.Issue, error) {
 	result := []*github.Issue{}
@@ -76,71 +130,104 @@ func issues(ctx context.Context, c *client.Client, org string, project string, s
 		matchUser[strings.ToLower(u)] = true
 	}
 
-	klog.Infof("Gathering issues for %s/%s, users=%q: %+v", org, project, users, opts)
-	for page := 1; page != 0; {
-		opts.ListOptions.Page = page
-		issues, resp, err := c.GitHubClient.Issues.ListByRepo(ctx, org, project, opts)
-		if err != nil {
-			return result, err
-		}
-		if len(issues) == 0 {
-			klog.Infof("There isn't any issue in %s/%s since %s", org, project, since)
-			break
-		}
+	klog.Infof("Gathering issues for %s/%s...", org, project)
+	klog.V(1).Infof("...with initial filters: Users: %v, Since: %s, Until: %s, State: %s, Sort: %s, Direction: %s",
+		users, since.Format(dateForm), until.Format(dateForm), opts.State, opts.Sort, opts.Direction)
 
-		klog.Infof("Processing page %d of %s/%s issue results ...", page, org, project)
-
-		page = resp.NextPage
-		klog.Infof("Current issue updated at %s", issues[0].GetUpdatedAt())
-
-		for _, i := range issues {
-			if i.IsPullRequest() {
-				continue
-			}
-			if i.GetClosedAt().After(until) {
-				klog.Infof("issue #%d closed at %s", i.GetNumber(), i.GetUpdatedAt())
-				continue
-			}
-
-			if i.GetUpdatedAt().Before(since) {
-				klog.Infof("Hit issue #%d updated at %s", i.GetNumber(), i.GetUpdatedAt())
-				page = 0
-				break
-			}
-
-			if !i.GetClosedAt().IsZero() && i.GetClosedAt().Before(since) {
-				continue
-			}
-
-			if state != "" && i.GetState() != state {
-				klog.Infof("Skipping issue #%d (state=%q)", i.GetNumber(), i.GetState())
-				continue
-			}
-
-			t := issueDate(i)
-
-			klog.Infof("Fetching #%d (closed %s, updated %s): %q", i.GetNumber(), i.GetClosedAt().Format(dateForm), i.GetUpdatedAt().Format(dateForm), i.GetTitle())
-
-			full, err := ghcache.IssuesGet(ctx, c.Cache, c.GitHubClient, t, org, project, i.GetNumber())
-			if err != nil {
-				full, err = ghcache.IssuesGet(ctx, c.Cache, c.GitHubClient, t, org, project, i.GetNumber())
-			}
-			if err != nil {
-				klog.Errorf("failed IssuesGet: %v", err)
-				break
-			}
-
-			creator := strings.ToLower(full.GetUser().GetLogin())
-			closer := strings.ToLower(full.GetClosedBy().GetLogin())
-			if len(matchUser) > 0 && !matchUser[creator] && !matchUser[closer] {
-				continue
-			}
-
-			result = append(result, full)
-		}
+	allFetchedIssues, err := fetchAllIssuePages(ctx, c.GitHubClient, org, project, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch issue list for %s/%s: %w", org, project, err)
 	}
 
-	klog.Infof("Returning %d issues", len(result))
+	if len(allFetchedIssues) == 0 {
+		klog.Infof("No issues initially found for %s/%s (State: %s, Sort: %s, Direction: %s).", org, project, opts.State, opts.Sort, opts.Direction)
+		return result, nil // result is empty
+	}
+
+	klog.Infof("Fetched %d issues for %s/%s via API. Now applying detailed local filters...", len(allFetchedIssues), org, project)
+	klog.V(1).Infof("...Detailed filter criteria: Users: %v, Since: %s, Until: %s, State: %s",
+		users, since.Format(dateForm), until.Format(dateForm), state)
+
+	for _, i := range allFetchedIssues {
+		if i.IsPullRequest() {
+			klog.V(1).Infof("Skipping issue #%d (%q): It is a pull request.", i.GetNumber(), i.GetTitle())
+			continue
+		}
+
+		// Filter 1: If this issue is already older than 'since', and issues are sorted by 'updated_at desc',
+		// all subsequent issues will also be older. So, we can stop processing.
+		if i.GetUpdatedAt().Before(since) {
+			klog.V(1).Infof("Optimization: Issue #%d (%q, updated %s) is before 'since' date %s. As issues are sorted by updated_at desc, stopping further processing of fetched list.",
+				i.GetNumber(), i.GetTitle(), i.GetUpdatedAt().Format(dateForm), since.Format(dateForm))
+			break // Stop processing the rest of allFetchedIssues
+		}
+
+		// Filter 2: Issue must be closed (if state="closed"),
+		// and its closed_at date must be within the [since, until] window.
+		// For open issues, these specific closed_at checks are skipped.
+		if state == "closed" {
+			closedAt := i.GetClosedAt()
+			if closedAt.IsZero() { // Should not happen if state is "closed" from API
+				klog.Warningf("Issue #%d (%q) from API with state='closed' has zero ClosedAt. Skipping.", i.GetNumber(), i.GetTitle())
+				continue
+			}
+			if closedAt.After(until) {
+				klog.V(1).Infof("Skipping issue #%d (%q): Closed at %s (after 'until' %s)", i.GetNumber(), i.GetTitle(), closedAt.Format(dateForm), until.Format(dateForm))
+				continue
+			}
+			if closedAt.Before(since) {
+				klog.V(1).Infof("Skipping issue #%d (%q): Closed at %s (before 'since' %s)", i.GetNumber(), i.GetTitle(), closedAt.Format(dateForm), since.Format(dateForm))
+				continue
+			}
+		}
+
+		// Filter 3: State filter (redundant if opts.State worked, but safe)
+		if state != "" && i.GetState() != state {
+			klog.V(1).Infof("Skipping issue #%d (%q): State is %q, not desired %q.", i.GetNumber(), i.GetTitle(), i.GetState(), state)
+			continue
+		}
+
+		// At this point, the issue from the list passes initial filters. Now fetch its full details for user matching.
+		t := issueDate(i) // Determine the timestamp for cache interaction
+		klog.V(1).Infof("Fetching full issue details for #%d (%q, closed %s, updated %s)", i.GetNumber(), i.GetTitle(), i.GetClosedAt().Format(dateForm), i.GetUpdatedAt().Format(dateForm))
+
+		full, err := ghcache.IssuesGet(ctx, c.Cache, c.GitHubClient, t, org, project, i.GetNumber())
+		if err != nil {
+			klog.Warningf("Failed to get full issue details for #%d (%s/%s): %v. Skipping this issue.", i.GetNumber(), org, project, err)
+			continue
+		}
+
+		// Filter 4: User filter (applied to the full issue object)
+		// Match if either creator or closer (if applicable) is in the user list.
+		// For open issues, closer might be nil or empty.
+		creatorLogin := full.GetUser().GetLogin()
+		matchesUserFilter := false
+		if len(matchUser) == 0 {
+			matchesUserFilter = true // No user filter means all users match
+		} else {
+			if matchUser[strings.ToLower(creatorLogin)] {
+				matchesUserFilter = true
+			}
+			if full.GetClosedBy() != nil { // ClosedBy can be nil for open issues
+				closerLogin := full.GetClosedBy().GetLogin()
+				if closerLogin != "" && matchUser[strings.ToLower(closerLogin)] {
+					matchesUserFilter = true
+				}
+			}
+		}
+
+		if !matchesUserFilter {
+			klog.V(1).Infof("Skipping issue #%d (%q) by %s (closer: %s): Neither creator nor closer in specified user list.",
+				full.GetNumber(), full.GetTitle(), creatorLogin, full.GetClosedBy().GetLogin())
+			continue
+		}
+
+		klog.Infof("Including issue #%d (%q): State %q, Created by %s, Closed by %s at %s.",
+			full.GetNumber(), full.GetTitle(), full.GetState(), creatorLogin, full.GetClosedBy().GetLogin(), full.GetClosedAt().Format(dateForm))
+		result = append(result, full)
+	}
+
+	klog.Infof("Returning %d issues after all filters.", len(result))
 	return result, nil
 }
 

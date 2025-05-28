@@ -95,7 +95,7 @@ func commentsChart(cs []*repo.CommentSummary, _ []string) chart {
 
 	return chart{
 		ID:     "comments",
-		Title:  "Most Active",
+		Title:  "Most Commentary",
 		Metric: "# of comments",
 		Items:  topItems(mapToItems(uMap)),
 	}

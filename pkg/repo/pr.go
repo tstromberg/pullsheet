@@ -16,6 +16,7 @@ package repo
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -34,6 +35,64 @@ var (
 	truncRe      = regexp.MustCompile(`changelog|CHANGELOG|Gopkg.toml`)
 	commentRe    = regexp.MustCompile(`<!--.*?>`)
 )
+
+// fetchAllPullRequestPages fetches all pages of pull requests using the provided GitHub client and options,
+// applying retry logic for each page request via ghcache.RetryGithubCall.
+func fetchAllPullRequestPages(
+	ctx context.Context,
+	ghClient *github.Client,
+	org string,
+	project string,
+	listOpts *github.PullRequestListOptions,
+) ([]*github.PullRequest, error) {
+	var allPRs []*github.PullRequest
+	currentOpts := *listOpts // Make a copy to modify Page
+
+	// Ensure we start at the first page if not already set.
+	// GitHub defaults to page 1 if opts.Page is 0.
+	// The loop structure relies on currentOpts.Page being explicitly managed.
+	if currentOpts.Page == 0 {
+		currentOpts.Page = 1
+	}
+
+	for {
+		// For RetryGithubCall, the key is primarily for logging context.
+		key := fmt.Sprintf("list-pr-pages-%s-%s-page%d", org, project, currentOpts.Page)
+		callDesc := fmt.Sprintf("PullRequests.List page %d for %s/%s (State: %s, Sort: %s, Direction: %s)", currentOpts.Page, org, project, listOpts.State, listOpts.Sort, listOpts.Direction)
+		klog.Info(callDesc)
+
+		apiCall := func() (interface{}, *github.Response, error) {
+			// This function is passed to RetryGithubCall, so it needs to match the expected signature.
+			// It captures ghClient, org, project, and currentOpts from the outer scope.
+			pagePRsData, ghRespData, errData := ghClient.PullRequests.List(ctx, org, project, &currentOpts)
+			return pagePRsData, ghRespData, errData
+		}
+
+		rawData, ghResp, err := ghcache.RetryGithubCall(ctx, key, callDesc, apiCall)
+		if err != nil {
+			return nil, err // Error is already formatted by RetryGithubCall
+		}
+
+		pagePRs, ok := rawData.([]*github.PullRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.PullRequest)", callDesc, rawData)
+		}
+
+		if len(pagePRs) == 0 { // No more PRs on this page.
+			klog.V(1).Infof("No pull requests found on page %d for %s/%s with specified criteria. Ending pagination.", currentOpts.Page, org, project)
+			break
+		}
+
+		allPRs = append(allPRs, pagePRs...)
+
+		if ghResp.NextPage == 0 {
+			break
+		}
+		currentOpts.Page = ghResp.NextPage
+	}
+	klog.V(1).Infof("Fetched %d pull requests via paginated API calls for %s/%s before applying detailed filters.", len(allPRs), org, project)
+	return allPRs, nil
+}
 
 // MergedPulls returns a list of pull requests in a project
 func MergedPulls(ctx context.Context, c *client.Client, org string, project string, since time.Time, until time.Time, users []string, branches []string) ([]*github.PullRequest, error) {
@@ -58,88 +117,123 @@ func MergedPulls(ctx context.Context, c *client.Client, org string, project stri
 		matchBranch[strings.ToLower(b)] = true
 	}
 
-	klog.Infof("Gathering pull requests for %s/%s, users=%q: %+v", org, project, users, opts)
-	for page := 1; page != 0; {
-		opts.ListOptions.Page = page
-		prs, resp, err := c.GitHubClient.PullRequests.List(ctx, org, project, opts)
-		if err != nil {
-			return result, err
-		}
+	klog.Infof("Gathering pull requests for %s/%s...", org, project)
+	klog.V(1).Infof("...with initial filters: Users: %v, Branches: %v, Since: %s, Until: %s, State: %s, Sort: %s, Direction: %s",
+		users, branches, since.Format(dateForm), until.Format(dateForm), opts.State, opts.Sort, opts.Direction)
 
-		if len(prs) == 0 {
-			klog.Infof("There isn't any issue in %s/%s since %s", org, project, since)
-			break
-		}
-
-		klog.Infof("Processing page %d of %s/%s pull request results (looking for %s)...", page, org, project, since)
-
-		// Repo has no PRs!
-		if len(prs) == 0 {
-			break
-		}
-
-		page = resp.NextPage
-		klog.Infof("Current PR updated at %s", prs[0].GetUpdatedAt())
-		for _, pr := range prs {
-			if pr.GetClosedAt().After(until) {
-				klog.Infof("PR#%d closed at %s", pr.GetNumber(), pr.GetUpdatedAt())
-				continue
-			}
-
-			if pr.GetUpdatedAt().Before(since) {
-				klog.Infof("Hit PR#%d updated at %s", pr.GetNumber(), pr.GetUpdatedAt())
-				page = 0
-				break
-			}
-
-			if !pr.GetClosedAt().IsZero() && pr.GetClosedAt().Before(since) {
-				continue
-			}
-
-			uname := strings.ToLower(pr.GetUser().GetLogin())
-			if len(matchUser) > 0 && !matchUser[uname] {
-				continue
-			}
-
-			if isBot(pr.GetUser()) {
-				continue
-			}
-
-			if pr.GetState() != "closed" {
-				klog.Infof("Skipping PR#%d by %s (state=%q)", pr.GetNumber(), pr.GetUser().GetLogin(), pr.GetState())
-				continue
-			}
-
-			klog.Infof("Fetching PR #%d by %s (updated %s): %q", pr.GetNumber(), pr.GetUser().GetLogin(), pr.GetUpdatedAt(), pr.GetTitle())
-			fullPR, err := ghcache.PullRequestsGet(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
-			if err != nil {
-				fullPR, err = ghcache.PullRequestsGet(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
-				if err != nil {
-					klog.Errorf("failed PullRequestsGet: %v", err)
-					break
-				}
-			}
-
-			branch := fullPR.GetBase().GetRef()
-			if len(matchBranch) > 0 && !matchBranch[branch] {
-				klog.Errorf("#%d merged to %s, skipping", pr.GetNumber(), branch)
-				continue
-			}
-
-			if !fullPR.GetMerged() || fullPR.GetMergeCommitSHA() == "" {
-				klog.Infof("#%d was not merged, skipping", pr.GetNumber())
-				continue
-			}
-
-			if pr.GetMergedAt().Before(since) {
-				klog.Infof("#%d was merged earlier than %s, skipping", pr.GetNumber(), since)
-				continue
-			}
-
-			result = append(result, fullPR)
-		}
+	// opts.Page will be managed by fetchAllPullRequestPages.
+	// It's initialized to 0 in opts, which fetchAllPullRequestPages handles as page 1.
+	allFetchedPRs, err := fetchAllPullRequestPages(ctx, c.GitHubClient, org, project, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch pull request list for %s/%s: %w", org, project, err)
 	}
-	klog.Infof("Returning %d pull request results", len(result))
+
+	if len(allFetchedPRs) == 0 {
+		klog.Infof("No pull requests initially found for %s/%s (State: %s, Sort: %s, Direction: %s).", org, project, opts.State, opts.Sort, opts.Direction)
+		return result, nil // result is empty
+	}
+
+	klog.Infof("Fetched %d pull requests for %s/%s via API. Now applying detailed local filters...", len(allFetchedPRs), org, project)
+	klog.V(1).Infof("...Detailed filter criteria: Users: %v, Branches: %v, Since: %s, Until: %s",
+		users, branches, since.Format(dateForm), until.Format(dateForm))
+
+	for _, pr := range allFetchedPRs {
+		// Filter 1: If this PR is already older than 'since', and PRs are sorted by 'updated_at desc',
+		// all subsequent PRs will also be older. So, we can stop processing.
+		if pr.GetUpdatedAt().Before(since) {
+			klog.V(1).Infof("Optimization: PR #%d ('%s', updated %s) is before 'since' date %s. As PRs are sorted by updated_at desc, stopping further processing of fetched list.",
+				pr.GetNumber(), pr.GetTitle(), pr.GetUpdatedAt().Format(dateForm), since.Format(dateForm))
+			break // Stop processing the rest of allFetchedPRs
+		}
+
+		// Filter 2: PR must be closed (this is already part of `opts.State`),
+		// and its closed_at date must be within the [since, until] window.
+		closedAt := pr.GetClosedAt()
+		if closedAt.IsZero() { // Not closed, or data missing
+			klog.V(1).Infof("Skipping PR #%d ('%s'): Not closed (ClosedAt is zero). State from API: %s", pr.GetNumber(), pr.GetTitle(), pr.GetState())
+			continue
+		}
+		if closedAt.After(until) {
+			klog.V(1).Infof("Skipping PR #%d ('%s'): Closed at %s (after 'until' %s)", pr.GetNumber(), pr.GetTitle(), closedAt.Format(dateForm), until.Format(dateForm))
+			continue
+		}
+		if closedAt.Before(since) {
+			klog.V(1).Infof("Skipping PR #%d ('%s'): Closed at %s (before 'since' %s)", pr.GetNumber(), pr.GetTitle(), closedAt.Format(dateForm), since.Format(dateForm))
+			continue
+		}
+
+		// Filter 3: User filter
+		prUserLogin := pr.GetUser().GetLogin()
+		uname := strings.ToLower(prUserLogin)
+		if len(matchUser) > 0 && !matchUser[uname] {
+			klog.V(1).Infof("Skipping PR #%d by %s: User not in specified list.", pr.GetNumber(), prUserLogin)
+			continue
+		}
+
+		// Filter 4: Bot filter
+		if isBot(pr.GetUser()) {
+			klog.V(1).Infof("Skipping PR #%d by %s: Detected as bot.", pr.GetNumber(), prUserLogin)
+			continue
+		}
+
+		// Filter 5: Ensure PR is actually in "closed" state (redundant if opts.State="closed" worked, but safe)
+		if pr.GetState() != "closed" {
+			klog.V(1).Infof("Skipping PR #%d by %s: State is '%s', not 'closed'.", pr.GetNumber(), prUserLogin, pr.GetState())
+			continue
+		}
+
+		// At this point, the PR from the list passes initial filters. Now fetch its full details.
+		klog.V(1).Infof("Fetching full PR details for #%d by %s (updated %s): '%s'", pr.GetNumber(), prUserLogin, pr.GetUpdatedAt().Format(dateForm), pr.GetTitle())
+
+		cacheTime := pr.GetMergedAt()
+		if cacheTime.IsZero() {
+			cacheTime = pr.GetClosedAt()
+		}
+		if cacheTime.IsZero() { // Should be rare if ClosedAt was set.
+			cacheTime = pr.GetUpdatedAt()
+			klog.Warningf("PR #%d ('%s') had zero MergedAt and ClosedAt from list; using UpdatedAt for cache key time.", pr.GetNumber(), pr.GetTitle())
+		}
+
+		fullPR, err := ghcache.PullRequestsGet(ctx, c.Cache, c.GitHubClient, cacheTime, org, project, pr.GetNumber())
+		if err != nil {
+			// This error is already logged by ghcache.RetryGithubCall if it's from the API call after retries.
+			// Add context specific to this loop.
+			klog.Warningf("Failed to get full PR details for #%d (%s/%s): %v. Skipping this PR.", pr.GetNumber(), org, project, err)
+			continue
+		}
+
+		// Filter 6: Branch filter (applied to the fullPR object)
+		branch := fullPR.GetBase().GetRef()
+		if len(matchBranch) > 0 && !matchBranch[branch] {
+			klog.V(1).Infof("Skipping PR #%d ('%s'): Merged to branch '%s', which is not in specified list %v.", fullPR.GetNumber(), fullPR.GetTitle(), branch, branches)
+			continue
+		}
+
+		// Filter 7: Must be merged (applied to the fullPR object)
+		if !fullPR.GetMerged() || fullPR.GetMergeCommitSHA() == "" {
+			klog.V(1).Infof("Skipping PR #%d ('%s'): Not merged or merge commit SHA is missing.", fullPR.GetNumber(), fullPR.GetTitle())
+			continue
+		}
+
+		// Filter 8: MergedAt timestamp must be within [since, until] (applied to fullPR object)
+		mergedAt := fullPR.GetMergedAt()
+		if mergedAt.IsZero() { // This should ideally not happen if fullPR.GetMerged() is true.
+			klog.Warningf("PR #%d ('%s') was marked as merged but MergedAt timestamp is zero. Skipping.", fullPR.GetNumber(), fullPR.GetTitle())
+			continue
+		}
+		if mergedAt.After(until) {
+			klog.V(1).Infof("Skipping PR #%d ('%s'): Merged at %s (after 'until' %s)", fullPR.GetNumber(), fullPR.GetTitle(), mergedAt.Format(dateForm), until.Format(dateForm))
+			continue
+		}
+		if mergedAt.Before(since) {
+			klog.V(1).Infof("Skipping PR #%d ('%s'): Merged at %s (before 'since' %s)", fullPR.GetNumber(), fullPR.GetTitle(), mergedAt.Format(dateForm), since.Format(dateForm))
+			continue
+		}
+
+		klog.Infof("Including PR #%d ('%s'): Merged by %s to branch '%s' at %s.", fullPR.GetNumber(), fullPR.GetTitle(), fullPR.GetUser().GetLogin(), branch, mergedAt.Format(dateForm))
+		result = append(result, fullPR)
+	}
+	klog.Infof("Returning %d pull request results after all filters.", len(result))
 	return result, nil
 }
 

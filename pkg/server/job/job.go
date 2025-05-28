@@ -79,7 +79,7 @@ func (j *Job) Render() (string, error) {
 func (j *Job) Update(ctx context.Context, cl *client.Client) {
 	err := j.u.updateData(ctx, cl, j.opts)
 	if err != nil {
-		klog.Errorf("Failed to update job: %d", err)
+		klog.Errorf("Failed to update job: %v", err)
 	}
 }
 

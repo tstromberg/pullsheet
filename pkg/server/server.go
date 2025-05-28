@@ -62,7 +62,7 @@ func (s *Server) Home() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		res, err := site.Home(s.jobs)
 		if err != nil {
-			klog.Errorf("rendering home page: %d", err)
+			klog.Errorf("rendering home page: %v", err)
 		}
 		fmt.Fprint(w, res)
 	}
@@ -79,7 +79,7 @@ func (s *Server) Job() http.HandlerFunc {
 		}
 		idx, err := strconv.Atoi(slug)
 		if err != nil {
-			klog.Errorf("getting job index: %d", err)
+			klog.Errorf("getting job index: %v", err)
 		}
 		if idx >= len(s.jobs) {
 			idx = 0
@@ -88,7 +88,7 @@ func (s *Server) Job() http.HandlerFunc {
 		// Render job from index number
 		res, err := s.jobs[idx].Render()
 		if err != nil {
-			klog.Errorf("rendering home page: %d", err)
+			klog.Errorf("rendering home page: %v", err)
 		}
 		fmt.Fprint(w, res)
 	}
@@ -115,11 +115,11 @@ func (s *Server) NewJob() http.HandlerFunc {
 
 			sinceParsed, err := tparse.ParseNow(dateForm, since)
 			if err != nil {
-				klog.Errorf("Parsing from: %d", err)
+				klog.Errorf("Parsing from: %v", err)
 			}
 			untilParsed, err := tparse.ParseNow(dateForm, until)
 			if err != nil {
-				klog.Errorf("Parsing from: %d", err)
+				klog.Errorf("Parsing from: %v", err)
 			}
 
 			s.AddJob(context.Background(), job.New(&job.Opts{
@@ -157,7 +157,7 @@ func (s *Server) Threadz() http.HandlerFunc {
 		klog.Infof("GET %s: %v", r.URL.Path, r.Header)
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(stack()); err != nil {
-			klog.Errorf("writing threadz response: %d", err)
+			klog.Errorf("writing threadz response: %v", err)
 		}
 	}
 }
