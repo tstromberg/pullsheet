@@ -38,12 +38,13 @@ var (
 
 // fetchAllPullRequestPages fetches all pages of pull requests using the provided GitHub client and options,
 // applying retry logic for each page request via ghcache.RetryGithubCall.
+// It uses traditional page-number based pagination.
 func fetchAllPullRequestPages(
 	ctx context.Context,
 	ghClient *github.Client,
 	org string,
 	project string,
-	listOpts *github.PullRequestListOptions,
+	listOpts *github.PullRequestListOptions, // PullRequestListOptions embeds ListOptions
 ) ([]*github.PullRequest, error) {
 	var allPRs []*github.PullRequest
 	currentOpts := *listOpts // Make a copy to modify Page
@@ -51,19 +52,25 @@ func fetchAllPullRequestPages(
 	// Ensure we start at the first page if not already set.
 	// GitHub defaults to page 1 if opts.Page is 0.
 	// The loop structure relies on currentOpts.Page being explicitly managed.
-	if currentOpts.Page == 0 {
+	if currentOpts.Page == 0 { // .Page is from embedded ListOptions
 		currentOpts.Page = 1
 	}
 
 	for {
 		// For RetryGithubCall, the key is primarily for logging context.
-		key := fmt.Sprintf("list-pr-pages-%s-%s-page%d", org, project, currentOpts.Page)
-		callDesc := fmt.Sprintf("PullRequests.List page %d for %s/%s (State: %s, Sort: %s, Direction: %s)", currentOpts.Page, org, project, listOpts.State, listOpts.Sort, listOpts.Direction)
+		// Use relevant fields from listOpts for the descriptive part of the key for consistency.
+		// Note: Base and Head are specific to PullRequestListOptions and are part of the overall query.
+		key := fmt.Sprintf("list-pr-pages-%s-%s-page%d-state%s-sort%s-dir%s-base%s-head%s",
+			org, project, currentOpts.Page,
+			listOpts.State, listOpts.Sort, listOpts.Direction, listOpts.Base, listOpts.Head)
+
+		callDesc := fmt.Sprintf("PullRequests.List page %d for %s/%s (State: %s, Sort: %s, Direction: %s, Base: %s, Head: %s, PerPage: %d)",
+			currentOpts.Page, org, project,
+			listOpts.State, listOpts.Sort, listOpts.Direction, listOpts.Base, listOpts.Head, currentOpts.ListOptions.PerPage)
 		klog.Info(callDesc)
 
 		apiCall := func() (interface{}, *github.Response, error) {
-			// This function is passed to RetryGithubCall, so it needs to match the expected signature.
-			// It captures ghClient, org, project, and currentOpts from the outer scope.
+			// currentOpts contains the .Page to be used
 			pagePRsData, ghRespData, errData := ghClient.PullRequests.List(ctx, org, project, &currentOpts)
 			return pagePRsData, ghRespData, errData
 		}
@@ -75,7 +82,13 @@ func fetchAllPullRequestPages(
 
 		pagePRs, ok := rawData.([]*github.PullRequest)
 		if !ok {
-			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.PullRequest)", callDesc, rawData)
+			// Handle cases where rawData might be nil but no error occurred (e.g. empty page)
+			// If rawData is nil and NextPage is 0 (or ghResp is nil), it's a valid end.
+			if rawData == nil && (ghResp == nil || ghResp.NextPage == 0) {
+				klog.V(1).Infof("No pull requests found for %s (rawData is nil, no next page). Ending pagination.", callDesc)
+				break
+			}
+			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.PullRequest or nil)", callDesc, rawData)
 		}
 
 		if len(pagePRs) == 0 { // No more PRs on this page.
@@ -85,7 +98,8 @@ func fetchAllPullRequestPages(
 
 		allPRs = append(allPRs, pagePRs...)
 
-		if ghResp.NextPage == 0 {
+		if ghResp == nil || ghResp.NextPage == 0 {
+			klog.V(1).Infof("No NextPage found for %s (or ghResp is nil). Ending pagination.", callDesc)
 			break
 		}
 		currentOpts.Page = ghResp.NextPage

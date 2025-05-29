@@ -26,24 +26,35 @@ import (
 )
 
 // fetchAllRepoPages fetches all pages of repositories for an organization.
+// It uses traditional page-number based pagination.
 func fetchAllRepoPages(
 	ctx context.Context,
 	ghClient *github.Client,
 	org string,
-	listOpts *github.RepositoryListByOrgOptions,
+	listOpts *github.RepositoryListByOrgOptions, // RepositoryListByOrgOptions embeds ListOptions
 ) ([]*github.Repository, error) {
 	var allGithubRepos []*github.Repository
 	currentOpts := *listOpts // Make a copy to modify Page
 
-	if currentOpts.Page == 0 {
+	// Ensure we start at the first page if not already set.
+	// GitHub defaults to page 1 if opts.Page is 0.
+	if currentOpts.Page == 0 { // .Page is from embedded ListOptions
 		currentOpts.Page = 1
 	}
 
 	for {
-		key := fmt.Sprintf("list-repo-pages-%s-page%d", org, currentOpts.Page)
-		callDesc := fmt.Sprintf("Repositories.ListByOrg page %d for %s (Type: %s, Sort: %s, Direction: %s)", currentOpts.Page, org, listOpts.Type, listOpts.Sort, listOpts.Direction)
+		// For RetryGithubCall, the key is primarily for logging context.
+		// Use relevant fields from listOpts for the descriptive part of the key for consistency.
+		key := fmt.Sprintf("list-repo-pages-%s-page%d-type%s-sort%s-dir%s",
+			org, currentOpts.Page,
+			listOpts.Type, listOpts.Sort, listOpts.Direction)
+
+		callDesc := fmt.Sprintf("Repositories.ListByOrg page %d for %s (Type: %s, Sort: %s, Direction: %s, PerPage: %d)",
+			currentOpts.Page, org,
+			listOpts.Type, listOpts.Sort, listOpts.Direction, currentOpts.ListOptions.PerPage)
 
 		apiCall := func() (interface{}, *github.Response, error) {
+			// currentOpts contains the .Page to be used
 			pageReposData, ghRespData, errData := ghClient.Repositories.ListByOrg(ctx, org, &currentOpts)
 			return pageReposData, ghRespData, errData
 		}
@@ -55,17 +66,24 @@ func fetchAllRepoPages(
 
 		pageRepos, ok := rawData.([]*github.Repository)
 		if !ok {
-			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.Repository)", callDesc, rawData)
+			// Handle cases where rawData might be nil but no error occurred (e.g. empty page)
+			// If rawData is nil and NextPage is 0 (or ghResp is nil), it's a valid end.
+			if rawData == nil && (ghResp == nil || ghResp.NextPage == 0) {
+				klog.V(1).Infof("No repositories found for %s (rawData is nil, no next page). Ending pagination.", callDesc)
+				break
+			}
+			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.Repository or nil)", callDesc, rawData)
 		}
 
-		if len(pageRepos) == 0 {
+		if len(pageRepos) == 0 { // No more repositories on this page.
 			klog.V(1).Infof("No repositories found on page %d for %s with specified criteria. Ending pagination.", currentOpts.Page, org)
 			break
 		}
 
 		allGithubRepos = append(allGithubRepos, pageRepos...)
 
-		if ghResp.NextPage == 0 {
+		if ghResp == nil || ghResp.NextPage == 0 {
+			klog.V(1).Infof("No NextPage found for %s (or ghResp is nil). Ending pagination.", callDesc)
 			break
 		}
 		currentOpts.Page = ghResp.NextPage

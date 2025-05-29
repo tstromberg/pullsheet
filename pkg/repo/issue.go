@@ -17,6 +17,7 @@ package repo
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/go-github/v72/github"
@@ -61,64 +62,109 @@ func ClosedIssues(ctx context.Context, c *client.Client, org string, project str
 
 // fetchAllIssuePages fetches all pages of issues using the provided GitHub client and options,
 // applying retry logic for each page request via ghcache.RetryGithubCall.
+// It uses cursor-based pagination via ListCursorOptions.After and Response.NextPageToken.
 func fetchAllIssuePages(
 	ctx context.Context,
 	ghClient *github.Client,
 	org string,
 	project string,
-	listOpts *github.IssueListByRepoOptions,
+	listOpts *github.IssueListByRepoOptions, // IssueListByRepoOptions embeds ListOptions and ListCursorOptions
 ) ([]*github.Issue, error) {
 	var allIssues []*github.Issue
-	currentOpts := *listOpts // Make a copy to modify
+	currentOpts := *listOpts // Make a copy to modify for pagination
 
-	// Use token-based pagination. Page should be 0 when PageToken is used.
+	// Ensure old integer-based page pagination is disabled
 	currentOpts.ListOptions.Page = 0
-	var currentPageToken string
+	// Ensure string-based page field in ListCursorOptions is disabled (we use 'After' or 'First')
+	currentOpts.ListCursorOptions.Page = ""
+
+	// Ensure PerPage is consistently set in ListCursorOptions.
+	// If not set in ListCursorOptions initially, try ListOptions. If still not, default to 50.
+	if currentOpts.ListCursorOptions.PerPage == 0 {
+		if currentOpts.ListOptions.PerPage != 0 {
+			currentOpts.ListCursorOptions.PerPage = currentOpts.ListOptions.PerPage
+		} else {
+			currentOpts.ListCursorOptions.PerPage = 100 // Default PerPage
+		}
+	}
+	// Zero out ListOptions.PerPage as ListCursorOptions.PerPage is now the authority.
+	currentOpts.ListOptions.PerPage = 0
+	currentOpts.ListCursorOptions.First = 0 // Initialize First, will be set for the first call
+
+	var currentAfterCursor string // This will hold the "after" cursor. Initially empty.
 
 	for {
-		currentOpts.ListOptions.PageToken = currentPageToken // Set the token for the upcoming API call
-
-		// For RetryGithubCall, the key is primarily for logging context.
-		logToken := currentPageToken
-		if logToken == "" {
-			logToken = "<initial>" // For logging the first request without a token
+		if currentAfterCursor == "" { // This is the first effective fetch
+			currentOpts.ListCursorOptions.First = currentOpts.ListCursorOptions.PerPage // Use 'First'
+			currentOpts.ListCursorOptions.After = ""                                    // Ensure 'After' is empty
+		} else { // Subsequent fetches
+			currentOpts.ListCursorOptions.First = 0 // Do not use 'First'; rely on PerPage via URL params if needed, or API default.
+			currentOpts.ListCursorOptions.After = currentAfterCursor
 		}
-		key := fmt.Sprintf("list-issue-pages-%s-%s-token-%s", org, project, logToken)
-		callDesc := fmt.Sprintf("Issues.ListByRepo with token %s for %s/%s (State: %s, Sort: %s, Direction: %s)", logToken, org, project, listOpts.State, listOpts.Sort, listOpts.Direction)
+
+		// Logging and Cache Key
+		logDesc := ""
+		if currentOpts.ListCursorOptions.After != "" {
+			logDesc = fmt.Sprintf("after %s", currentOpts.ListCursorOptions.After)
+		} else {
+			logDesc = fmt.Sprintf("first %d", currentOpts.ListCursorOptions.First)
+		}
+
+		// Create a stable key for the request based on options and cursor logic
+		stableOptsPart := fmt.Sprintf("state=%s-sort=%s-dir=%s-since=%s-labels=%s-assignee=%s-mentioned=%s-creator=%s-perpage=%d",
+			listOpts.State, listOpts.Sort, listOpts.Direction, listOpts.Since.Format(time.RFC3339),
+			strings.Join(listOpts.Labels, ","), listOpts.Assignee, listOpts.Mentioned, listOpts.Creator, currentOpts.ListCursorOptions.PerPage)
+		// Differentiate cache key for initial "first N" request vs "after cursor" requests
+		var cursorKeyPart string
+		if currentOpts.ListCursorOptions.After != "" {
+			cursorKeyPart = fmt.Sprintf("after-%s", currentOpts.ListCursorOptions.After)
+		} else {
+			cursorKeyPart = fmt.Sprintf("first-%d", currentOpts.ListCursorOptions.First)
+		}
+		cacheKey := fmt.Sprintf("list-issue-pages-%s-%s-%s-opts-%s", org, project, cursorKeyPart, stableOptsPart)
+
+		callDesc := fmt.Sprintf("Issues.ListByRepo using %s for %s/%s (State: %s, Sort: %s, Direction: %s, PerPage: %d)",
+			logDesc, org, project,
+			listOpts.State, listOpts.Sort, listOpts.Direction, // Log initial overall request parameters
+			currentOpts.ListCursorOptions.PerPage) // Log current PerPage being used
 
 		apiCall := func() (interface{}, *github.Response, error) {
+			// currentOpts is now prepared with either First (for initial) or After (for subsequent)
 			pageIssuesData, ghRespData, errData := ghClient.Issues.ListByRepo(ctx, org, project, &currentOpts)
 			return pageIssuesData, ghRespData, errData
 		}
 
-		rawData, ghResp, err := ghcache.RetryGithubCall(ctx, key, callDesc, apiCall)
+		klog.Info(callDesc)
+		rawData, ghResp, err := ghcache.RetryGithubCall(ctx, cacheKey, callDesc, apiCall)
 		if err != nil {
 			return nil, err // Error is already formatted by RetryGithubCall
 		}
 
 		pageIssues, ok := rawData.([]*github.Issue)
 		if !ok {
-			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.Issue)", callDesc, rawData)
-		}
-
-		if len(pageIssues) == 0 { // No issues returned for the current token.
-			logToken := currentPageToken
-			if logToken == "" {
-				logToken = "<initial>"
+			// This can happen if rawData is nil (e.g. API call succeeded but returned no data, and apiCall returned nil for data part)
+			// Or if the type assertion fails for other reasons.
+			// If rawData is nil and there's no next page token, it's a valid end.
+			if rawData == nil && (ghResp == nil || ghResp.After == "") {
+				klog.V(1).Infof("No further issues found for %s (rawData is nil, no next page cursor in ghResp.After). Ending pagination.", callDesc)
+				break
 			}
-			klog.V(1).Infof("No issues found with token '%s' for %s/%s with specified criteria. Ending pagination.", logToken, org, project)
-			break
+			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.Issue or nil)", callDesc, rawData)
 		}
 
-		allIssues = append(allIssues, pageIssues...)
+		if len(pageIssues) > 0 {
+			allIssues = append(allIssues, pageIssues...)
+		}
 
-		// Use NextPageToken for the next request
-		if ghResp.NextPageToken == "" {
-			// No NextPageToken indicates no more pages.
+		// An API call can return 0 issues on a "page" but still have a next page cursor.
+
+		if ghResp == nil || ghResp.After == "" { // Check ghResp.After for the next cursor
+			klog.V(1).Infof("No next page cursor found in ghResp.After for %s (or ghResp is nil). Ending pagination.", callDesc)
 			break
 		}
-		currentPageToken = ghResp.NextPageToken
+		currentAfterCursor = ghResp.After // Prepare for the next iteration
 	}
+
 	klog.V(1).Infof("Fetched %d issues via paginated API calls for %s/%s before applying detailed filters.", len(allIssues), org, project)
 	return allIssues, nil
 }
