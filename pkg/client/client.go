@@ -20,7 +20,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/google/go-github/v33/github"
+	"github.com/google/go-github/v72/github"
 	"golang.org/x/oauth2"
 
 	"github.com/google/triage-party/pkg/persist"

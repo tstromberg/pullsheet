@@ -17,10 +17,9 @@ package repo
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/google/go-github/v33/github"
+	"github.com/google/go-github/v72/github"
 	"k8s.io/klog/v2"
 
 	"github.com/google/pullsheet/pkg/client"
@@ -70,17 +69,22 @@ func fetchAllIssuePages(
 	listOpts *github.IssueListByRepoOptions,
 ) ([]*github.Issue, error) {
 	var allIssues []*github.Issue
-	currentOpts := *listOpts // Make a copy to modify Page
+	currentOpts := *listOpts // Make a copy to modify
 
-	// Ensure we start at the first page if not already set.
-	if currentOpts.Page == 0 {
-		currentOpts.Page = 1
-	}
+	// Use token-based pagination. Page should be 0 when PageToken is used.
+	currentOpts.ListOptions.Page = 0
+	var currentPageToken string
 
 	for {
+		currentOpts.ListOptions.PageToken = currentPageToken // Set the token for the upcoming API call
+
 		// For RetryGithubCall, the key is primarily for logging context.
-		key := fmt.Sprintf("list-issue-pages-%s-%s-page%d", org, project, currentOpts.Page)
-		callDesc := fmt.Sprintf("Issues.ListByRepo page %d for %s/%s (State: %s, Sort: %s, Direction: %s)", currentOpts.Page, org, project, listOpts.State, listOpts.Sort, listOpts.Direction)
+		logToken := currentPageToken
+		if logToken == "" {
+			logToken = "<initial>" // For logging the first request without a token
+		}
+		key := fmt.Sprintf("list-issue-pages-%s-%s-token-%s", org, project, logToken)
+		callDesc := fmt.Sprintf("Issues.ListByRepo with token %s for %s/%s (State: %s, Sort: %s, Direction: %s)", logToken, org, project, listOpts.State, listOpts.Sort, listOpts.Direction)
 
 		apiCall := func() (interface{}, *github.Response, error) {
 			pageIssuesData, ghRespData, errData := ghClient.Issues.ListByRepo(ctx, org, project, &currentOpts)
@@ -97,17 +101,23 @@ func fetchAllIssuePages(
 			return nil, fmt.Errorf("unexpected type from GitHub API for %s: %T (expected []*github.Issue)", callDesc, rawData)
 		}
 
-		if len(pageIssues) == 0 { // No more issues on this page.
-			klog.V(1).Infof("No issues found on page %d for %s/%s with specified criteria. Ending pagination.", currentOpts.Page, org, project)
+		if len(pageIssues) == 0 { // No issues returned for the current token.
+			logToken := currentPageToken
+			if logToken == "" {
+				logToken = "<initial>"
+			}
+			klog.V(1).Infof("No issues found with token '%s' for %s/%s with specified criteria. Ending pagination.", logToken, org, project)
 			break
 		}
 
 		allIssues = append(allIssues, pageIssues...)
 
-		if ghResp.NextPage == 0 {
+		// Use NextPageToken for the next request
+		if ghResp.NextPageToken == "" {
+			// No NextPageToken indicates no more pages.
 			break
 		}
-		currentOpts.Page = ghResp.NextPage
+		currentPageToken = ghResp.NextPageToken
 	}
 	klog.V(1).Infof("Fetched %d issues via paginated API calls for %s/%s before applying detailed filters.", len(allIssues), org, project)
 	return allIssues, nil
@@ -121,7 +131,7 @@ func issues(ctx context.Context, c *client.Client, org string, project string, s
 		Sort:      "updated",
 		Direction: "desc",
 		ListOptions: github.ListOptions{
-			PerPage: 100,
+			PerPage: 50,
 		},
 	}
 
@@ -240,5 +250,5 @@ func issueDate(i *github.Issue) time.Time {
 		t = i.GetCreatedAt()
 	}
 
-	return t
+	return t.Time
 }

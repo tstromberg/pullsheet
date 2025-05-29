@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/avast/retry-go"
-	"github.com/google/go-github/v33/github"
+	"github.com/google/go-github/v72/github"
 	"github.com/google/triage-party/pkg/persist"
 	"k8s.io/klog/v2"
 )

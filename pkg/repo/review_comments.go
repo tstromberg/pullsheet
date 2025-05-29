@@ -24,7 +24,7 @@ import (
 	"unicode"
 
 	"github.com/blevesearch/segment"
-	"github.com/google/go-github/v33/github"
+	"github.com/google/go-github/v72/github"
 	"github.com/spf13/viper"
 	"k8s.io/klog/v2"
 
@@ -74,7 +74,7 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 		prMap := map[string]*ReviewSummary{}
 		comments := []comment{}
 
-		ts, err := ghcache.Reviews(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
+		ts, err := ghcache.Reviews(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt().Time, org, project, pr.GetNumber())
 		if err != nil {
 			klog.Errorf("TIMELINE FAILED: %v", err)
 			return nil, err
@@ -89,15 +89,16 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 			if t.GetUser().GetLogin() == pr.GetUser().GetLogin() {
 				continue
 			}
-			comments = append(comments, comment{Author: t.GetUser().GetLogin(), Body: t.GetState() + " " + t.GetBody(), CreatedAt: t.GetSubmittedAt(), Review: true})
+			comments = append(comments, comment{Author: t.GetUser().GetLogin(), Body: t.GetState() + " " + t.GetBody(), CreatedAt: t.GetSubmittedAt().Time, Review: true})
 		}
 
+		// Timeline events include review comments
 		for _, rs := range prMap {
 			reviews = append(reviews, rs)
 		}
 
 		// There is wickedness in the GitHub API: PR comments are available via the Issues API, and PR *review* comments are available via the PullRequests API
-		cs, err := ghcache.PullRequestsListComments(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
+		cs, err := ghcache.PullRequestsListComments(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt().Time, org, project, pr.GetNumber())
 		if err != nil {
 			return nil, err
 		}
@@ -108,10 +109,10 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 			}
 
 			body := strings.TrimSpace(cs[idx].GetBody())
-			comments = append(comments, comment{Author: cs[idx].GetUser().GetLogin(), Body: body, CreatedAt: cs[idx].GetCreatedAt(), Review: true})
+			comments = append(comments, comment{Author: cs[idx].GetUser().GetLogin(), Body: body, CreatedAt: cs[idx].GetCreatedAt().Time, Review: true})
 		}
 
-		is, err := ghcache.IssuesListComments(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt(), org, project, pr.GetNumber())
+		is, err := ghcache.IssuesListComments(ctx, c.Cache, c.GitHubClient, pr.GetMergedAt().Time, org, project, pr.GetNumber())
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +128,7 @@ func MergedReviews(ctx context.Context, c *client.Client, org string, project st
 				continue
 			}
 
-			comments = append(comments, comment{Author: i.GetUser().GetLogin(), Body: body, CreatedAt: i.GetCreatedAt(), Review: false})
+			comments = append(comments, comment{Author: i.GetUser().GetLogin(), Body: body, CreatedAt: i.GetCreatedAt().Time, Review: false})
 		}
 
 		for _, c := range comments {

@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/go-github/v33/github"
+	"github.com/google/go-github/v72/github"
 	"k8s.io/klog/v2"
 
 	"github.com/google/pullsheet/pkg/client"
@@ -39,7 +39,7 @@ func Pulls(ctx context.Context, c *client.Client, repos []string, users []string
 		}
 
 		for _, pr := range prs {
-			files, err := repo.FilteredFiles(ctx, c, pr.GetMergedAt(), org, project, pr.GetNumber())
+			files, err := repo.FilteredFiles(ctx, c, pr.GetMergedAt().Time, org, project, pr.GetNumber())
 			if err != nil {
 				return nil, fmt.Errorf("filtered files: %v", err)
 			}

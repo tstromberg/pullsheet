@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-github/v33/github"
+	"github.com/google/go-github/v72/github"
 	"k8s.io/klog/v2"
 
 	"github.com/google/pullsheet/pkg/client"
@@ -194,7 +194,7 @@ func MergedPulls(ctx context.Context, c *client.Client, org string, project stri
 			klog.Warningf("PR #%d ('%s') had zero MergedAt and ClosedAt from list; using UpdatedAt for cache key time.", pr.GetNumber(), pr.GetTitle())
 		}
 
-		fullPR, err := ghcache.PullRequestsGet(ctx, c.Cache, c.GitHubClient, cacheTime, org, project, pr.GetNumber())
+		fullPR, err := ghcache.PullRequestsGet(ctx, c.Cache, c.GitHubClient, cacheTime.Time, org, project, pr.GetNumber())
 		if err != nil {
 			// This error is already logged by ghcache.RetryGithubCall if it's from the API call after retries.
 			// Add context specific to this loop.

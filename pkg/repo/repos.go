@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/go-github/v33/github"
+	"github.com/google/go-github/v72/github"
 	"k8s.io/klog/v2"
 
 	"github.com/google/pullsheet/pkg/client"
