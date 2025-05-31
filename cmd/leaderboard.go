@@ -189,7 +189,7 @@ func dataFromGitHub() (*data, error) {
 		return nil, err
 	}
 
-	issues, err := summary.Issues(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.sinceParsed, rootOpts.untilParsed)
+	closed_issues, err := summary.ClosedIssues(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.sinceParsed, rootOpts.untilParsed)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func dataFromGitHub() (*data, error) {
 		return nil, err
 	}
 
-	return &data{prs, reviews, issues, comments}, nil
+	return &data{prs, reviews, closed_issues, comments}, nil
 }
 
 func appendJSONFiles(d *data) (*data, error) {

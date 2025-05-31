@@ -26,22 +26,22 @@ import (
 	"github.com/google/pullsheet/pkg/client"
 )
 
-// issuesCmd represents the subcommand for `pullsheet issues`
-var issuesCmd = &cobra.Command{
-	Use:           "issues",
+// openedIssuesCmd represents the subcommand for `pullsheet issues_opened`
+var openedIssuesCmd = &cobra.Command{
+	Use:           "issues_opened",
 	Short:         "Generate data around issues",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runIssues(rootOpts)
+		return runOpenedIssues(rootOpts)
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(issuesCmd)
+	rootCmd.AddCommand(openedIssuesCmd)
 }
 
-func runIssues(rootOpts *rootOptions) error {
+func runOpenedIssues(rootOpts *rootOptions) error {
 	ctx := context.Background()
 	c, err := client.New(ctx, client.Config{GitHubTokenPath: rootOpts.tokenPath})
 	if err != nil {
@@ -55,7 +55,7 @@ func runIssues(rootOpts *rootOptions) error {
 		}
 	}
 
-	data, err := summary.Issues(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.sinceParsed, rootOpts.untilParsed)
+	data, err := summary.OpenedIssues(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.sinceParsed, rootOpts.untilParsed)
 	if err != nil {
 		return err
 	}

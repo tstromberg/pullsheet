@@ -76,12 +76,27 @@ func Reviews(ctx context.Context, c *client.Client, repos []string, users []stri
 	return rs, nil
 }
 
-// Issues returns a summary of issues for the specified repositories and users.
-func Issues(ctx context.Context, c *client.Client, repos []string, users []string, since time.Time, until time.Time) ([]*repo.IssueSummary, error) {
+// ClosedIssues returns a summary of closed issues for the specified repositories and users.
+func ClosedIssues(ctx context.Context, c *client.Client, repos []string, users []string, since time.Time, until time.Time) ([]*repo.IssueSummary, error) {
 	rs := []*repo.IssueSummary{}
 	for _, r := range repos {
 		org, project := repo.ParseURL(r)
 		rrs, err := repo.ClosedIssues(ctx, c, org, project, since, until, users)
+		if err != nil {
+			return nil, fmt.Errorf("merged pulls: %v", err)
+		}
+		rs = append(rs, rrs...)
+	}
+
+	return rs, nil
+}
+
+// OpenedIssues returns a summary of opened issues for the specified repositories and users.
+func OpenedIssues(ctx context.Context, c *client.Client, repos []string, users []string, since time.Time, until time.Time) ([]*repo.IssueSummary, error) {
+	rs := []*repo.IssueSummary{}
+	for _, r := range repos {
+		org, project := repo.ParseURL(r)
+		rrs, err := repo.OpenedIssues(ctx, c, org, project, since, until, users)
 		if err != nil {
 			return nil, fmt.Errorf("merged pulls: %v", err)
 		}

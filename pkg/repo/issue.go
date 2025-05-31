@@ -29,13 +29,15 @@ import (
 
 // IssueSummary is a summary of a single PR
 type IssueSummary struct {
-	URL     string
-	Date    string
-	Author  string
-	Closer  string
-	Project string
-	Type    string
-	Title   string
+	URL        string
+	CreateDate string
+	CloseDate  string
+	Author     string
+	Closer     string
+	Project    string
+	State      string
+	Type       string
+	Title      string
 }
 
 // ClosedIssues returns a list of closed issues within a project
@@ -48,12 +50,35 @@ func ClosedIssues(ctx context.Context, c *client.Client, org string, project str
 	result := make([]*IssueSummary, 0, len(closed))
 	for _, i := range closed {
 		result = append(result, &IssueSummary{
-			URL:     i.GetHTMLURL(),
-			Date:    i.GetClosedAt().Format(dateForm),
-			Author:  i.GetUser().GetLogin(),
-			Closer:  i.GetClosedBy().GetLogin(),
-			Project: project,
-			Title:   i.GetTitle(),
+			URL:        i.GetHTMLURL(),
+			CreateDate: i.GetCreatedAt().Format(dateForm),
+			CloseDate:  i.GetClosedAt().Format(dateForm),
+			Author:     i.GetUser().GetLogin(),
+			Closer:     i.GetClosedBy().GetLogin(),
+			Project:    project,
+			Title:      i.GetTitle(),
+		})
+	}
+
+	return result, nil
+}
+
+// Opened returns a list of opened issues within a project
+func OpenedIssues(ctx context.Context, c *client.Client, org string, project string, since time.Time, until time.Time, users []string) ([]*IssueSummary, error) {
+	is, err := issues(ctx, c, org, project, since, until, users, "opened")
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*IssueSummary, 0, len(is))
+	for _, i := range is {
+		result = append(result, &IssueSummary{
+			URL:        i.GetHTMLURL(),
+			CreateDate: i.GetCreatedAt().Format(dateForm),
+			State:      i.GetState(),
+			Author:     i.GetUser().GetLogin(),
+			Project:    project,
+			Title:      i.GetTitle(),
 		})
 	}
 
@@ -170,14 +195,21 @@ func fetchAllIssuePages(
 }
 
 // issues returns a list of issues in a project
-func issues(ctx context.Context, c *client.Client, org string, project string, since time.Time, until time.Time, users []string, state string) ([]*github.Issue, error) {
+func issues(ctx context.Context, c *client.Client, org string, project string, since time.Time, until time.Time, users []string, kind string) ([]*github.Issue, error) {
 	result := []*github.Issue{}
+	state := "all"
+	sort := "created"
+	if kind == "closed" {
+		state = kind
+		sort = "updated"
+	}
+
 	opts := &github.IssueListByRepoOptions{
 		State:     state,
-		Sort:      "updated",
+		Sort:      sort,
 		Direction: "desc",
 		ListOptions: github.ListOptions{
-			PerPage: 50,
+			PerPage: 100,
 		},
 	}
 
@@ -210,19 +242,41 @@ func issues(ctx context.Context, c *client.Client, org string, project string, s
 			continue
 		}
 
-		// Filter 1: If this issue is already older than 'since', and issues are sorted by 'updated_at desc',
-		// all subsequent issues will also be older. So, we can stop processing.
-		if i.GetUpdatedAt().Before(since) {
-			klog.V(1).Infof("Optimization: Issue #%d (%q, updated %s) is before 'since' date %s. As issues are sorted by updated_at desc, stopping further processing of fetched list.",
-				i.GetNumber(), i.GetTitle(), i.GetUpdatedAt().Format(dateForm), since.Format(dateForm))
-			break // Stop processing the rest of allFetchedIssues
+		//	klog.Infof("filtering %q: #%d (%q) - %v", kind, i.GetNumber(), i.GetTitle(), i.GetUpdatedAt())
+		if kind == "opened" {
+			openedAt := i.GetCreatedAt()
+
+			if openedAt.Before(since) {
+				klog.Infof("Short circuit: Issue #%d (%q, created %s) is before 'since' date %s. As issues are sorted by updated_at desc, stopping further processing of fetched list.",
+					i.GetNumber(), i.GetTitle(), openedAt.Format(dateForm), since.Format(dateForm))
+				break // Stop processing the rest of allFetchedIssues
+			}
+
+			if openedAt.After(until) {
+				klog.V(1).Infof("Skipping issue #%d (%q): Opened at %s (after 'until' %s)", i.GetNumber(), i.GetTitle(), openedAt.Format(dateForm), until.Format(dateForm))
+				continue
+			}
+			if openedAt.Before(since) {
+				klog.V(1).Infof("Skipping issue #%d (%q): Opened at %s (before 'since' %s)", i.GetNumber(), i.GetTitle(), openedAt.Format(dateForm), since.Format(dateForm))
+				continue
+			}
+
 		}
 
 		// Filter 2: Issue must be closed (if state="closed"),
 		// and its closed_at date must be within the [since, until] window.
 		// For open issues, these specific closed_at checks are skipped.
-		if state == "closed" {
+		if kind == "closed" {
 			closedAt := i.GetClosedAt()
+
+			// Filter 1: If this issue is already older than 'since', and issues are sorted by 'updated_at desc',
+			// all subsequent issues will also be older. So, we can stop processing.
+			if i.GetUpdatedAt().Before(since) {
+				klog.Infof("Short circuit: Issue #%d (%q, updated %s) is before 'since' date %s. As issues are sorted by updated_at desc, stopping further processing of fetched list.",
+					i.GetNumber(), i.GetTitle(), i.GetUpdatedAt().Format(dateForm), since.Format(dateForm))
+				break // Stop processing the rest of allFetchedIssues
+			}
+
 			if closedAt.IsZero() { // Should not happen if state is "closed" from API
 				klog.Warningf("Issue #%d (%q) from API with state='closed' has zero ClosedAt. Skipping.", i.GetNumber(), i.GetTitle())
 				continue
@@ -238,7 +292,7 @@ func issues(ctx context.Context, c *client.Client, org string, project string, s
 		}
 
 		// Filter 3: State filter (redundant if opts.State worked, but safe)
-		if state != "" && i.GetState() != state {
+		if state != "all" && i.GetState() != state {
 			klog.V(1).Infof("Skipping issue #%d (%q): State is %q, not desired %q.", i.GetNumber(), i.GetTitle(), i.GetState(), state)
 			continue
 		}
@@ -261,10 +315,10 @@ func issues(ctx context.Context, c *client.Client, org string, project string, s
 		if len(matchUser) == 0 {
 			matchesUserFilter = true // No user filter means all users match
 		} else {
-			if matchUser[strings.ToLower(creatorLogin)] {
+			if kind == "opened" && matchUser[strings.ToLower(creatorLogin)] {
 				matchesUserFilter = true
 			}
-			if full.GetClosedBy() != nil { // ClosedBy can be nil for open issues
+			if kind == "closed" && full.GetClosedBy() != nil { // ClosedBy can be nil for open issues
 				closerLogin := full.GetClosedBy().GetLogin()
 				if closerLogin != "" && matchUser[strings.ToLower(closerLogin)] {
 					matchesUserFilter = true

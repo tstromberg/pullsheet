@@ -28,20 +28,18 @@ func issueCloserChart(is []*repo.IssueSummary, users []string) chart {
 
 	uMap := map[string]int{}
 	for _, i := range is {
-		if i.Author != i.Closer {
-			if len(matchUser) > 0 && !matchUser[strings.ToLower(i.Closer)] {
-				continue
-			}
-			if !strings.HasSuffix(i.Closer, "bot") {
-				uMap[i.Closer]++
-			}
+		if !matchUser[strings.ToLower(i.Closer)] {
+			continue
+		}
+		if !strings.HasSuffix(i.Closer, "bot") {
+			uMap[i.Closer]++
 		}
 	}
 
 	return chart{
 		ID:     "issueCloser",
 		Title:  "Top Closers",
-		Metric: "# of issues closed (excludes authored)",
+		Metric: "# of issues closed",
 		Items:  topItems(mapToItems(uMap)),
 	}
 }

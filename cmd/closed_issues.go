@@ -1,0 +1,69 @@
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package cmd
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/google/pullsheet/pkg/print"
+	"github.com/google/pullsheet/pkg/repo"
+	"github.com/google/pullsheet/pkg/summary"
+	"github.com/spf13/cobra"
+
+	"github.com/google/pullsheet/pkg/client"
+)
+
+// closedIssuesCmd represents the subcommand for `pullsheet issues_closed`
+var closedIssuesCmd = &cobra.Command{
+	Use:           "issues_closed",
+	Short:         "Generate data around issues",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runClosedIssues(rootOpts)
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(closedIssuesCmd)
+}
+
+func runClosedIssues(rootOpts *rootOptions) error {
+	ctx := context.Background()
+	c, err := client.New(ctx, client.Config{GitHubTokenPath: rootOpts.tokenPath})
+	if err != nil {
+		return err
+	}
+
+	if rootOpts.org != "" && len(rootOpts.repos) == 0 {
+		rootOpts.repos, err = repo.ListRepoNames(ctx, c, rootOpts.org)
+		if err != nil {
+			return fmt.Errorf("list repos: %v", err)
+		}
+	}
+
+	data, err := summary.ClosedIssues(ctx, c, rootOpts.repos, rootOpts.users, rootOpts.sinceParsed, rootOpts.untilParsed)
+	if err != nil {
+		return err
+	}
+
+	err = print.Print(data, rootOpts.out)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

@@ -75,7 +75,7 @@ func (u *updater) updateData(ctx context.Context, cl *client.Client, opts *Opts)
 		return err
 	}
 
-	issues, err := summary.Issues(ctx, cl, opts.Repos, opts.Users, opts.Since, opts.Until)
+	issues, err := summary.ClosedIssues(ctx, cl, opts.Repos, opts.Users, opts.Since, opts.Until)
 	if err != nil {
 		return err
 	}
